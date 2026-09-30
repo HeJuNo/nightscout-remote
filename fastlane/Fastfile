@@ -1,0 +1,187 @@
+# fastlane-Konfiguration fuer den GitHub-Browser-Build von Nightscout Remote.
+# Aufbau angelehnt an LoopKit/LoopWorkspace, reduziert auf ein einziges App-Target.
+
+require "base64"
+
+default_platform(:ios)
+
+TEAMID                  = ENV["TEAMID"]
+GH_PAT                  = ENV["GH_PAT"]
+GITHUB_WORKSPACE        = ENV["GITHUB_WORKSPACE"] || File.expand_path("..", __dir__)
+GITHUB_REPOSITORY_OWNER = ENV["GITHUB_REPOSITORY_OWNER"]
+FASTLANE_KEY_ID         = ENV["FASTLANE_KEY_ID"]
+FASTLANE_ISSUER_ID      = ENV["FASTLANE_ISSUER_ID"]
+FASTLANE_KEY            = ENV["FASTLANE_KEY"]
+
+# Bundle-ID: Repository-Variable BUNDLE_ID oder com.<TEAMID>.nightscoutremote
+BUNDLE_ID = (ENV["BUNDLE_ID"].to_s.strip.empty? ? "com.#{TEAMID}.nightscoutremote" : ENV["BUNDLE_ID"].strip)
+APP_NAME  = "Nightscout Remote"
+TARGET    = "NightscoutRemote"
+PROJECT   = "#{GITHUB_WORKSPACE}/NightscoutRemote.xcodeproj"
+
+ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
+
+def asc_api_key
+  app_store_connect_api_key(
+    key_id: FASTLANE_KEY_ID,
+    issuer_id: FASTLANE_ISSUER_ID,
+    key_content: FASTLANE_KEY
+  )
+end
+
+def match_auth
+  Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}")
+end
+
+platform :ios do
+
+  desc "Bundle-ID bei Apple anlegen (keine Zusatz-Capabilities noetig)"
+  lane :identifiers do
+    setup_ci if ENV["CI"]
+    asc_api_key
+
+    existing = Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
+    if existing
+      UI.success("Bundle-ID #{BUNDLE_ID} existiert bereits.")
+    else
+      Spaceship::ConnectAPI::BundleId.create(
+        name: APP_NAME,
+        identifier: BUNDLE_ID,
+        platform: "IOS"
+      )
+      UI.success("Bundle-ID #{BUNDLE_ID} wurde angelegt.")
+    end
+  end
+
+  desc "Distribution-Zertifikat und App-Store-Profil erstellen/aktualisieren"
+  lane :certs do
+    setup_ci if ENV["CI"]
+    ENV["MATCH_READONLY"] = false.to_s
+    asc_api_key
+
+    match(
+      type: "appstore",
+      force: false,
+      verbose: true,
+      git_basic_authorization: match_auth,
+      app_identifier: [BUNDLE_ID]
+    )
+  end
+
+  desc "Secrets pruefen (Apple-API-Zugang und Entschluesselung von Match-Secrets)"
+  lane :validate_secrets do
+    setup_ci if ENV["CI"]
+    ENV["MATCH_READONLY"] = true.to_s
+    asc_api_key
+
+    Spaceship::ConnectAPI::BundleId.find(BUNDLE_ID)
+
+    match(
+      type: "appstore",
+      git_basic_authorization: match_auth,
+      app_identifier: []
+    )
+  end
+
+  desc "Alle Distribution-Zertifikate und Profile widerrufen (nur bei Bedarf)"
+  lane :nuke_certs do
+    setup_ci if ENV["CI"]
+    ENV["MATCH_READONLY"] = false.to_s
+    asc_api_key
+
+    match_nuke(
+      type: "appstore",
+      team_id: TEAMID,
+      skip_confirmation: true,
+      git_basic_authorization: match_auth
+    )
+  end
+
+  desc "Pruefen, ob ein gueltiges Distribution-Zertifikat existiert"
+  lane :check_and_renew_certificates do
+    setup_ci if ENV["CI"]
+    asc_api_key
+
+    certificates = Spaceship::ConnectAPI::Certificate.all
+    distribution = certificates.select { |c| c.certificate_type == "DISTRIBUTION" }
+
+    needed = distribution.empty? || distribution.all? { |c| Time.parse(c.expiration_date) < Time.now }
+    distribution.each do |c|
+      UI.message("Distribution-Zertifikat #{c.id}, gueltig bis #{c.expiration_date}")
+    end
+
+    file_path = File.expand_path("new_certificate_needed.txt")
+    File.write(file_path, needed ? "true" : "false")
+    UI.message("Neues Zertifikat noetig: #{needed}")
+  end
+
+  desc "Signierte IPA bauen"
+  lane :build do
+    setup_ci if ENV["CI"]
+    api_key = asc_api_key
+
+    previous = latest_testflight_build_number(
+      app_identifier: BUNDLE_ID,
+      api_key: api_key,
+      initial_build_number: 0
+    )
+    build_number = previous + 1
+    UI.message("Build-Nummer: #{build_number}")
+
+    match(
+      type: "appstore",
+      readonly: true,
+      git_basic_authorization: match_auth,
+      app_identifier: [BUNDLE_ID]
+    )
+
+    mapping = Actions.lane_context[SharedValues::MATCH_PROVISIONING_PROFILE_MAPPING]
+    profile_name = mapping[BUNDLE_ID]
+
+    update_code_signing_settings(
+      path: PROJECT,
+      use_automatic_signing: false,
+      team_id: TEAMID,
+      bundle_identifier: BUNDLE_ID,
+      profile_name: profile_name,
+      code_sign_identity: "iPhone Distribution",
+      targets: [TARGET]
+    )
+
+    xcargs = "CURRENT_PROJECT_VERSION=#{build_number}"
+    app_version = ENV["APP_VERSION"].to_s.strip
+    xcargs += " MARKETING_VERSION=#{app_version}" unless app_version.empty?
+
+    build_app(
+      project: PROJECT,
+      scheme: TARGET,
+      configuration: "Release",
+      export_method: "app-store",
+      output_name: "NightscoutRemote.ipa",
+      destination: "generic/platform=iOS",
+      buildlog_path: "buildlog",
+      xcargs: xcargs,
+      export_options: {
+        provisioningProfiles: { BUNDLE_ID => profile_name }
+      }
+    )
+
+    copy_artifacts(
+      target_path: "artifacts",
+      artifacts: ["*.mobileprovision", "*.ipa", "*.dSYM.zip"]
+    )
+  end
+
+  desc "IPA zu TestFlight hochladen"
+  lane :release do
+    api_key = asc_api_key
+
+    upload_to_testflight(
+      api_key: api_key,
+      app_identifier: BUNDLE_ID,
+      ipa: "NightscoutRemote.ipa",
+      skip_submission: false,
+      skip_waiting_for_build_processing: true
+    )
+  end
+end

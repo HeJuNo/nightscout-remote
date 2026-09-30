@@ -4,7 +4,7 @@ import Security
 enum KeychainHelper {
     private static let service = "nightscout.kh.app"
 
-    // Required by generated APIClient
+    // Legacy helper (unused)
     static var authToken: String? {
         get { read(key: "auth_token") }
         set {
