@@ -140,7 +140,7 @@ struct HistoryView: View {
             Section {
                 EmptyView()
             } footer: {
-                Text("Zeigt die Einträge dieser App aus den letzten 30 Tagen. Zum Löschen nach links wischen.")
+                Text("Zeigt die Einträge dieser App aus den letzten 30 Tagen mit dem Namen des Access Tokens, das sie eingetragen hat. „Unbekannt“ steht bei älteren Einträgen, die noch ohne Namen gespeichert wurden. Zum Löschen nach links wischen.")
             }
         }
         .listStyle(.insetGrouped)
@@ -171,14 +171,25 @@ private struct HistoryRow: View {
                 Text(item.isGlucose ? "Blutzucker (Finger)" : "Kohlenhydrate")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Image(systemName: "person.fill")
+                        .imageScale(.small)
+                    Text(item.subject ?? "Unbekannt")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Eingetragen von \(item.subject ?? "unbekannt")")
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             if isDeleting {
                 ProgressView()
             } else {
                 Text(item.date.formatted(date: .omitted, time: .shortened))
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .fixedSize()
             }
         }
         .padding(.vertical, 4)

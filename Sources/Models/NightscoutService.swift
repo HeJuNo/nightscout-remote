@@ -201,7 +201,7 @@ enum NightscoutService {
         }
         let auth = try await session(base: creds.base, token: creds.token)
 
-        let entry: [String: Any]
+        var entry: [String: Any]
         if let glucose = item.glucose, let unit = item.glucoseUnit {
             // Blood glucose check as entered in the Nightscout Careportal.
             entry = [
@@ -219,6 +219,11 @@ enum NightscoutService {
                 "created_at": item.createdAtString,
                 "enteredBy": enteredBy
             ]
+        }
+        // Name of the access token's subject (as in Nightscout API v3), so the history
+        // can show who made the entry.
+        if let subject = auth.subject, !subject.isEmpty {
+            entry["subject"] = subject
         }
         let body: [[String: Any]] = [entry]
 
@@ -430,6 +435,8 @@ struct NightscoutTreatment: Identifiable, Hashable {
     let glucose: Double?
     let units: String?
     let date: Date
+    /// Name of the access token (subject) that created the entry; nil for older entries.
+    let subject: String?
 
     init?(json: [String: Any]) {
         guard let id = json["_id"] as? String else { return nil }
@@ -438,6 +445,8 @@ struct NightscoutTreatment: Identifiable, Hashable {
         self.carbs = Self.number(json["carbs"])
         self.glucose = Self.number(json["glucose"])
         self.units = json["units"] as? String
+        let rawSubject = (json["subject"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.subject = (rawSubject?.isEmpty ?? true) ? nil : rawSubject
 
         if let s = json["created_at"] as? String,
            let d = ISO8601DateFormatter.nightscoutFormatter.date(from: s)
