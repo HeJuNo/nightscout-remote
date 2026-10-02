@@ -4,7 +4,7 @@ import SwiftUI
 struct NightscoutKhAppApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
     }
 }

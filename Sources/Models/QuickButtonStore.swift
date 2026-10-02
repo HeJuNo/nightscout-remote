@@ -5,7 +5,7 @@ import Observation
 @Observable
 final class QuickButtonStore {
     static let shared = QuickButtonStore()
-    static let defaultValues: [Int] = [2, 4, 6, 15]
+    static let defaultValues: [Int] = [2, 4, 6, 14]
     static let maxButtons = 12
 
     private let key = "quick_button_values"

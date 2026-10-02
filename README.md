@@ -4,13 +4,16 @@ Native iOS-App (SwiftUI) zum schnellen Eintragen von **Kohlenhydraten** und **Bl
 
 ## Funktionen
 
-- **Schnell-Buttons** für KH (Standard: 2 g, 4 g, 6 g, 15 g) – frei anpassbar, sortierbar, bis zu 12 Buttons
+- **Schnell-Buttons** für KH (Standard: 2 g, 4 g, 6 g, 14 g) – frei anpassbar, sortierbar, bis zu 12 Buttons
 - **Manuelle KH-Eingabe** für beliebige Werte
 - **Blutzucker-Eingabe** als „BG Check“ (Finger), wahlweise in mg/dL oder mmol/L
 - Einträge **ohne Absorptionszeit**, markiert mit `enteredBy: "Nightscout Remote"`
 - **Warteschlange**: Fehlgeschlagene Uploads werden gespeichert und mit ursprünglicher Uhrzeit automatisch nachgeholt (bei Netzwerkrückkehr, App-Aktivierung, alle 60 s)
 - **Hintergrund-Upload**: Laufende Übertragungen werden nach dem Schließen der App noch abgeschlossen
 - **Verbindungstest**: prüft Erreichbarkeit, Lese- und Schreibrechte des Tokens
+- **Verlauf** (eigener Tab): KH- und BZ-Einträge dieser App der letzten **30 Tage**, nach Tagen gruppiert (Heute, Gestern, Datum), neueste zuerst. Einträge von Loop oder anderen Apps werden nicht angezeigt; ältere Einträge mit `enteredBy: "Nightscout KH App"` sind enthalten
+- **Einträge löschen**: im Verlauf nach links wischen oder lange drücken → bestätigen. Der Eintrag wird endgültig aus Nightscout entfernt (benötigt das Recht `api:treatments:delete`, siehe Voraussetzungen)
+- **Aktualisieren** des Verlaufs bei jedem Tab-Wechsel, per Herunterziehen oder über den Knopf oben rechts
 - **Access-Token-Anmeldung** (JWT über `/api/v2/authorization/request`), Token sicher im iOS-Schlüsselbund
 
 ## Voraussetzungen
@@ -18,14 +21,15 @@ Native iOS-App (SwiftUI) zum schnellen Eintragen von **Kohlenhydraten** und **Bl
 - iOS 18.0 oder neuer
 - Nightscout-Instanz (mit API v2 / Version 14+ empfohlen)
 - Access Token aus Nightscout: *Admin-Werkzeuge → Subjekt hinzufügen*, Rolle **careportal** (Schreiben) und **readable** (Lesen)
+- Zum **Löschen** im Verlauf zusätzlich das Recht `api:treatments:delete`, z.B. über die Rolle **admin** oder eine eigene Rolle. Fehlt es, zeigt der Verlauf einen Hinweis; Eintragen funktioniert weiterhin
 
 ## Projektstruktur
 
 ```
 Sources/
   App/      App-Einstieg, Keychain-Helfer
-  Models/   Nightscout-API, Warteschlange, Button-Speicher, ViewModel
-  Views/    Hauptbildschirm, Einstellungen, Warteschlangen-Ansicht
+  Models/   Nightscout-API, Warteschlange, Button-Speicher, ViewModels (Eintragen, Verlauf)
+  Views/    Tab-Leiste (Eintragen/Verlauf), Hauptbildschirm, Verlauf, Einstellungen, Warteschlangen-Ansicht
 Assets.xcassets/     App-Icon
 project.yml          XcodeGen-Projektdefinition
 fastlane/            Fastfile + Matchfile (Signieren, Bauen, TestFlight-Upload)

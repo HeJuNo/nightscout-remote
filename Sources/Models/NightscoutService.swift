@@ -11,6 +11,7 @@ enum NightscoutError: LocalizedError {
     case unauthorized
     case serverError(Int)
     case networkError(String)
+    case deleteForbidden
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ enum NightscoutError: LocalizedError {
             return "Server-Fehler (HTTP \(code)). Bitte URL und Access Token prüfen."
         case .networkError(let msg):
             return "Netzwerkfehler: \(msg)"
+        case .deleteForbidden:
+            return "Keine Löschberechtigung. Das Access Token braucht das Recht „api:treatments:delete“ (z.B. Rolle „admin“ oder eine eigene Rolle in Nightscout)."
         }
     }
 }
@@ -56,6 +59,8 @@ struct ConnectionTestResult {
 enum NightscoutService {
 
     static let enteredBy = "Nightscout Remote"
+    /// Earlier app versions marked entries with this name; they are shown in the history too.
+    static let legacyEnteredBy = ["Nightscout KH App"]
     static let tokenKeychainKey = "access_token"
 
     // MARK: - JWT session
@@ -235,6 +240,77 @@ enum NightscoutService {
         }
     }
 
+    // MARK: - History (entries made by this app)
+
+    /// Loads the treatments created by this app (current + legacy `enteredBy`)
+    /// within the last `days` days, newest first.
+    static func fetchAppTreatments(days: Int = 30, countPerSource: Int = 100) async throws -> [NightscoutTreatment] {
+        let creds = try storedCredentials()
+        let auth = try await session(base: creds.base, token: creds.token)
+        let since = ISO8601DateFormatter.nightscoutFormatter.string(
+            from: Date().addingTimeInterval(-Double(days) * 86_400))
+
+        var result: [String: NightscoutTreatment] = [:]
+        for name in [enteredBy] + legacyEnteredBy {
+            guard var comps = URLComponents(string: "\(creds.base)/api/v1/treatments.json") else {
+                throw NightscoutError.invalidURL
+            }
+            comps.queryItems = [
+                URLQueryItem(name: "find[enteredBy]", value: name),
+                URLQueryItem(name: "find[created_at][$gte]", value: since),
+                URLQueryItem(name: "count", value: String(countPerSource))
+            ]
+            guard let url = comps.url, url.host != nil else { throw NightscoutError.invalidURL }
+
+            let (data, http) = try await perform(bearerRequest(url, jwt: auth.jwt))
+            logger.info("GET treatments (enteredBy \(name)): HTTP \(http.statusCode), \(data.count) bytes")
+            switch http.statusCode {
+            case 200..<300: break
+            case 401, 403:
+                await cache.set(nil)
+                throw NightscoutError.unauthorized
+            default:
+                throw NightscoutError.serverError(http.statusCode)
+            }
+            let array = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+            for obj in array {
+                if let t = NightscoutTreatment(json: obj) { result[t.id] = t }
+            }
+        }
+        return result.values.sorted { $0.date > $1.date }
+    }
+
+    /// Whether the stored access token may delete treatments. Nil if unknown (not configured / offline).
+    static func deletePermitted() async -> Bool? {
+        guard let creds = try? storedCredentials(),
+              let auth = try? await session(base: creds.base, token: creds.token) else { return nil }
+        return permits(auth.permissions, "api:treatments:delete")
+    }
+
+    /// Deletes one treatment in Nightscout (`DELETE /api/v1/treatments/<_id>`).
+    static func deleteTreatment(id: String) async throws {
+        let creds = try storedCredentials()
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard let encoded = id.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(string: "\(creds.base)/api/v1/treatments/\(encoded)"), url.host != nil else {
+            throw NightscoutError.invalidURL
+        }
+        let auth = try await session(base: creds.base, token: creds.token)
+        let (_, http) = try await perform(bearerRequest(url, jwt: auth.jwt, method: "DELETE"))
+        logger.info("DELETE /api/v1/treatments/\(id): HTTP \(http.statusCode)")
+        switch http.statusCode {
+        case 200..<300: return
+        case 401, 403:
+            await cache.set(nil)
+            if !permits(auth.permissions, "api:treatments:delete") {
+                throw NightscoutError.deleteForbidden
+            }
+            throw NightscoutError.unauthorized
+        default:
+            throw NightscoutError.serverError(http.statusCode)
+        }
+    }
+
     // MARK: - Connection test
 
     static func testConnection(urlString: String, token rawToken: String) async -> ConnectionTestResult {
@@ -338,4 +414,63 @@ extension ISO8601DateFormatter {
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+
+    static let nightscoutFormatterNoFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+}
+
+/// A treatment as stored in Nightscout (only the fields this app needs).
+struct NightscoutTreatment: Identifiable, Hashable {
+    let id: String
+    let eventType: String
+    let carbs: Double?
+    let glucose: Double?
+    let units: String?
+    let date: Date
+
+    init?(json: [String: Any]) {
+        guard let id = json["_id"] as? String else { return nil }
+        self.id = id
+        self.eventType = json["eventType"] as? String ?? ""
+        self.carbs = Self.number(json["carbs"])
+        self.glucose = Self.number(json["glucose"])
+        self.units = json["units"] as? String
+
+        if let s = json["created_at"] as? String,
+           let d = ISO8601DateFormatter.nightscoutFormatter.date(from: s)
+            ?? ISO8601DateFormatter.nightscoutFormatterNoFraction.date(from: s) {
+            self.date = d
+        } else if let ms = Self.number(json["mills"]) ?? Self.number(json["date"]) {
+            self.date = Date(timeIntervalSince1970: ms / 1000)
+        } else {
+            return nil
+        }
+    }
+
+    var isGlucose: Bool { glucose != nil && (carbs ?? 0) == 0 }
+
+    var glucoseUnit: GlucoseUnit {
+        guard let u = units?.lowercased() else { return GlucoseUnit.current }
+        return u.contains("mmol") ? .mmol : .mgdl
+    }
+
+    var displayText: String {
+        if isGlucose, let g = glucose {
+            return "BZ \(glucoseUnit.format(g)) \(glucoseUnit.label)"
+        }
+        let c = carbs ?? 0
+        let text = c == c.rounded() ? String(Int(c)) : c.formatted(.number.precision(.fractionLength(1)))
+        return "\(text) g KH"
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let i = value as? Int { return Double(i) }
+        if let n = value as? NSNumber { return n.doubleValue }
+        if let s = value as? String { return Double(s.replacingOccurrences(of: ",", with: ".")) }
+        return nil
+    }
 }

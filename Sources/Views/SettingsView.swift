@@ -257,7 +257,7 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
             }
 
-            Button("Auf Standard zurücksetzen (2/4/6/15 g)", role: .destructive) {
+            Button("Auf Standard zurücksetzen (2/4/6/14 g)", role: .destructive) {
                 showResetConfirm = true
             }
             .confirmationDialog("Schnell-Buttons zurücksetzen?", isPresented: $showResetConfirm, titleVisibility: .visible) {
